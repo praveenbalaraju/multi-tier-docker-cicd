@@ -1,0 +1,53 @@
+name: Multi-Tier Docker CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create Environment File from Example
+        run: cp .env.example .env
+
+      - name: Build and Start Multi-Container Stack
+        run: docker compose up --build -d
+
+      - name: Wait for Services & Run Integration Tests
+        run: |
+          echo "Waiting for Nginx -> API -> PostgreSQL stack..."
+          for i in {1..15}; do
+            if curl -sf http://localhost:8080/health | grep -q '"status":"healthy"'; then
+              echo "Health check passed!"
+              break
+            fi
+            sleep 2
+          done
+
+          # Verify /health endpoint
+          curl -f http://localhost:8080/health
+
+          # Test POST /deployments (Write to PostgreSQL)
+          curl -f -X POST http://localhost:8080/deployments \
+            -H "Content-Type: application/json" \
+            -d '{"service_name":"ci-pipeline-test","status":"verified"}'
+
+          # Test GET /deployments (Read from PostgreSQL)
+          curl -f http://localhost:8080/deployments | grep -q "ci-pipeline-test"
+          echo "All integration tests passed!"
+
+      - name: Tag Verified Release Image
+        run: |
+          docker tag multi-tier-docker-cicd-api:latest multi-tier-api:${{ github.sha }}
+          docker images | grep multi-tier-api
+
+      - name: Tear Down Test Containers
+        if: always()
+        run: docker compose down -v
